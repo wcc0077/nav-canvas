@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Navigator Canvas</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: var(--vscode-editor-background);
+            color: var(--vscode-editor-foreground);
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+            position: relative;
+            overflow: hidden;
+        }
+        #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            cursor: grab;
+            transform-origin: 0 0;
+        }
+        #canvas:active {
+            cursor: grabbing;
+        }
+        .node {
+            position: absolute;
+            padding: 12px;
+            border-radius: 6px;
+            background-color: var(--vscode-editor-background);
+            border: 1px solid var(--vscode-editor-foreground);
+            user-select: none;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            cursor: grab;
+            z-index: 1;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            backdrop-filter: blur(8px);
+            min-width: 120px;
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .node:hover {
+            background-color: var(--vscode-list-hoverBackground);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.15);
+            z-index: 2;
+        }
+        .node:active {
+            cursor: grabbing;
+            transform: scale(0.98);
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+        .node.dragging {
+            opacity: 0.9;
+            transform: scale(1.05);
+            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.2);
+            z-index: 100;
+        }
+        .node-icon {
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            flex-shrink: 0;
+        }
+        .node-folder {
+            color: var(--vscode-gitDecoration-untrackedResourceForeground);
+            font-weight: 500;
+        }
+        .node-file {
+            color: var(--vscode-editor-foreground);
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <canvas id="canvas"></canvas>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            let nodes = [];
+            let scale = 1;
+            let offsetX = 0;
+            let offsetY = 0;
+            let isDraggingCanvas = false;
+            let lastX = 0;
+            let lastY = 0;
+
+            function resizeCanvas() {
+                canvas.width = window.innerWidth;
+                canvas.height = window.innerHeight;
+                draw();
+            }
+
+            function draw() {
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.save();
+                ctx.translate(offsetX, offsetY);
+                ctx.scale(scale, scale);
+
+                // 绘制节点之间的连线
+                nodes.forEach(node => {
+                    if (node.parent) {
+                        const parent = nodes.find(n => n.id === node.parent);
+                        if (parent) {
+                            const startX = parent.x + parent.width / 2;
+                            const startY = parent.y + parent.height / 2;
+                            const endX = node.x + node.width / 2;
+                            const endY = node.y + node.height / 2;
+
+                            // 计算控制点
+                            const dx = endX - startX;
+                            const dy = endY - startY;
+                            const distance = Math.sqrt(dx * dx + dy * dy);
+                            const tension = Math.min(0.5, distance / 300);
+
+                            const midX = (startX + endX) / 2;
+                            const midY = (startY + endY) / 2;
+                            const controlPoint1X = startX + (midX - startX) * tension;
+                            const controlPoint1Y = startY + (midY - startY) * tension;
+                            const controlPoint2X = endX - (endX - midX) * tension;
+                            const controlPoint2Y = endY - (endY - midY) * tension;
+
+                            // 创建渐变色
+                            const gradient = ctx.createLinearGradient(startX, startY, endX, endY);
+                            gradient.addColorStop(0, 'rgba(100, 100, 100, 0.8)');
+                            gradient.addColorStop(1, 'rgba(100, 100, 100, 0.4)');
+
+                            // 绘制连线
+                            ctx.beginPath();
+                            ctx.strokeStyle = gradient;
+                            ctx.lineWidth = 2 / scale;
+                            ctx.lineCap = 'round';
+                            ctx.lineJoin = 'round';
+                            ctx.moveTo(startX, startY);
+                            ctx.bezierCurveTo(
+                                controlPoint1X, controlPoint1Y,
+                                controlPoint2X, controlPoint2Y,
+                                endX, endY
+                            );
+                            ctx.stroke();
+
+                            // 绘制连接点
+                            ctx.fillStyle = gradient;
+                            ctx.beginPath();
+                            ctx.arc(startX, startY, 4 / scale, 0, Math.PI * 2);
+                            ctx.arc(endX, endY, 4 / scale, 0, Math.PI * 2);
+                            ctx.fill();
+                        }
+                    }
+                });
+
+                ctx.restore();
+                requestAnimationFrame(draw);
+            }
+
+            function createNodeElement(node) {
+                const container = document.getElementById('canvas-container');
+                const div = document.createElement('div');
+                div.className = `node node-${node.type}`;
+                div.dataset.id = node.id;
+                div.style.transform = `translate(${offsetX + node.x * scale}px, ${offsetY + node.y * scale}px) scale(${scale})`;
+
+                const icon = document.createElement('span');
+                icon.className = 'node-icon';
+                icon.textContent = node.type === 'folder' ? '📁' : '📄';
+                div.appendChild(icon);
+
+                const text = document.createElement('span');
+                text.textContent = node.name;
+                div.appendChild(text);
+
+                let isDragging = false;
+                let startX = 0;
+                let startY = 0;
+
+                div.addEventListener('mousedown', (e) => {
+                    if (e.button === 0) {
+                        isDragging = true;
+                        startX = e.clientX - (offsetX + node.x * scale);
+                        startY = e.clientY - (offsetY + node.y * scale);
+                        div.style.cursor = 'grabbing';
+                        div.classList.add('dragging');
+                    }
+                });
+
+                window.addEventListener('mousemove', (e) => {
+                    if (isDragging) {
+                        const canvasX = (e.clientX - offsetX) / scale;
+                        const canvasY = (e.clientY - offsetY) / scale;
+                        const newX = canvasX - startX / scale;
+                        const newY = canvasY - startY / scale;
+                        node.x = newX;
+                        node.y = newY;
+                        div.style.transform = `translate(${offsetX + newX * scale}px, ${offsetY + newY * scale}px) scale(${scale})`;
+                        requestAnimationFrame(draw);
+                    }
+                });
+
+                window.addEventListener('mouseup', (e) => {
+                    if (isDragging) {
+                        isDragging = false;
+                        div.style.cursor = 'grab';
+                        div.classList.remove('dragging');
+                        window.removeEventListener('mousemove', moveHandler);
+                        window.removeEventListener('mouseup', this);
+                        e.stopPropagation();
+                    }
+                });
+
+                div.addEventListener('mousedown', (e) => {
+                    e.stopPropagation();
+                    if (e.button === 0) {
+                        isDragging = true;
+                        startX = e.clientX - (offsetX + node.x * scale);
+                        startY = e.clientY - (offsetY + node.y * scale);
+                        div.style.cursor = 'grabbing';
+                        div.classList.add('dragging');
+                    }
+                });
+
+                div.addEventListener('dblclick', () => {
+                    if (node.type === 'file') {
+                        vscode.postMessage({
+                            type: 'openFile',
+                            path: node.id
+                        });
+                    }
+                });
+
+                container.appendChild(div);
+                return div;
+            }
+
+            function updateNodeElements() {
+                const container = document.getElementById('canvas-container');
+                const existingNodes = new Set(Array.from(container.querySelectorAll('.node')).map(el => el.dataset.id));
+                
+                nodes.forEach(node => {
+                    if (!existingNodes.has(node.id)) {
+                        createNodeElement(node);
+                    } else {
+                        const element = document.querySelector(`.node[data-id="${node.id}"]`);
+                        if (element) {
+                            const transformX = offsetX + node.x * scale;
+                            const transformY = offsetY + node.y * scale;
+                            element.style.transform = `translate(${transformX}px, ${transformY}px) scale(${scale})`;
+                        }
+                    }
+                });
+                
+                // Remove nodes that no longer exist
+                existingNodes.forEach(id => {
+                    if (!nodes.some(node => node.id === id)) {
+                        const element = document.querySelector(`.node[data-id="${id}"]`);
+                        if (element) {
+                            element.remove();
+                        }
+                    }
+                });
+            }
+
+            window.addEventListener('resize', resizeCanvas);
+            resizeCanvas();
+
+            window.addEventListener('message', event => {
+                try {
+                    const message = event.data;
+                    switch (message.type) {
+                        case 'updateFileTree':
+                            nodes = message.data;
+                            draw();
+                            updateNodeElements();
+                            break;
+                        default:
+                            console.warn('未知的消息类型:', message.type);
+                    }
+                } catch (error) {
+                    console.error('处理消息时发生错误：' + error.message);
+                }
+            });
+        })();
+    </script>
+</body>
+</html>
